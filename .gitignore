@@ -1,0 +1,33 @@
+# Build / generated output
+/build/
+/build-*/
+/cmake-build-*/
+/dist/
+CMakeFiles/
+CMakeCache.txt
+CTestTestfile.cmake
+Testing/
+compile_commands.json
+*.o
+*.a
+*.dylib
+*.so
+*.exe
+
+# Local credentials, shares, configuration and state
+.env
+.env.*
+!.env.example
+shares.enc
+shares.json
+*.enc
+*.key
+*.pem
+
+# Python/macOS tooling
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store
+.idea/
+.vscode/
