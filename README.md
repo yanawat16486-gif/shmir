@@ -2,15 +2,16 @@
 
 C implementation of the **3-of-5 Shamir Secret Sharing math project**, ported from
 `Shamir_Phase2_Secure_Fixed.py`. It provides a reusable `libshmir`, a terminal CLI,
-encrypted persistent state, and tests. The historical Python source is preserved in
-`reference/` to support regression and format compatibility.
+encrypted persistent state, and tests. The Python CLI lives in `reference/`
+and uses the same encrypted state format.
 
 ## Requirements
 
 * C17 compiler, CMake >=3.20
 * OpenSSL >=3 (`libcrypto`), `json-c`, `libargon2`
 * POSIX OS: **macOS, Linux, FreeBSD** (macOS/FreeBSD not yet runtime-tested).
-* Python 3 with `cryptography` and `argon2-cffi` **only for the optional cross-language test**.
+* Python 3 with `cryptography` and `argon2-cffi` for the Python CLI's encrypted
+  storage and for the optional cross-language test.
 
 On macOS with Homebrew:
 
@@ -49,6 +50,18 @@ cross-language test using `-DSHMIR_PYTHON_COMPAT=OFF` (see CMake option below).
 Menu 1 creates 5 shares and saves encrypted state; 2 recovers manually; 3 recovers from
 stored shares; 4 runs the demo; 5 deletes encrypted state; 6 exports a single holder's
 plaintext share without overwriting an existing file.
+
+The Python CLI exposes the same six menu actions and supports `--demo`,
+`--test`, `--help`, `--no-alt-screen`, and `--setup`:
+
+```sh
+python3 reference/Shamir_Phase2_Secure_Fixed.py --help
+python3 reference/Shamir_Phase2_Secure_Fixed.py --test
+```
+
+Use `--setup` only to reset the shared state. It requires an interactive
+terminal and exact confirmation with `RESET SHMIR`. Successful setup replaces
+`shares.enc` and removes legacy `shares.json` after verifying the new file.
 
 The file path is `$XDG_STATE_HOME/shamir-secret-sharing/shares.enc` or, by default,
 `$HOME/.local/state/shamir-secret-sharing/shares.enc`. Legacy `shares.json` migration

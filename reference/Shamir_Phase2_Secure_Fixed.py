@@ -1,8 +1,8 @@
 """โครงงานคณิตศาสตร์: ระบบแบ่งความลับแบบ 3-of-5
 
 ระบบแบ่งความลับตามเอกสารบทที่ 3 รันได้ด้วย Python 3.8 ขึ้นไป
-วิธีรัน: python3 Shamir_Phase2_Secure.py
-ดูตัวอย่างตามเอกสาร: python3 Shamir_Phase2_Secure.py --demo
+วิธีรัน: python3 Shamir_Phase2_Secure_Fixed.py
+ดูตัวอย่างตามเอกสาร: python3 Shamir_Phase2_Secure_Fixed.py --demo
 """
 
 import argparse
@@ -53,6 +53,8 @@ def create_shares(secret, a1, a2):
         raise ValueError("ความลับและสัมประสิทธิ์ต้องเป็นจำนวนเต็ม")
     if not all(0 <= value < PRIME for value in (secret, a1, a2)):
         raise ValueError(f"ค่าทั้งสามต้องอยู่ระหว่าง 0 ถึง {PRIME - 1}")
+    if a2 == 0:
+        raise ValueError("สัมประสิทธิ์ดีกรีสองต้องไม่เป็นศูนย์")
 
     shares = []
 
@@ -238,7 +240,8 @@ def crypto_modules():
 
 
 def state_dir():
-    base = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state")))
+    configured_base = os.environ.get("XDG_STATE_HOME")
+    base = Path(configured_base) if configured_base else Path.home() / ".local" / "state"
     return base / "shamir-secret-sharing"
 
 
@@ -431,10 +434,58 @@ def prompt_new_password():
         if confirmation == "/cancel":
             print("ยกเลิกการตั้งรหัสผ่าน — ไม่มีข้อมูลถูกเขียนทับ")
             return None
-        if not hmac.compare_digest(password, confirmation):
+        if not hmac.compare_digest(password.encode("utf-8"), confirmation.encode("utf-8")):
             print("[!] รหัสผ่านไม่ตรงกัน กรุณากรอกใหม่ทั้งสองครั้ง")
             continue
         return password
+
+
+def clean_setup():
+    """Create a new encrypted state after explicit confirmation, as in C."""
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        print("การตั้งค่าใหม่ต้องใช้เทอร์มินัลแบบโต้ตอบ", file=sys.stderr)
+        return 1
+
+    print(f"ตั้งค่า shmir ใหม่\nไฟล์ State: {state_path()}")
+    print("การตั้งค่าสำเร็จจะเขียนทับ shares.enc และลบ shares.json เดิม")
+    print("Python และ C ใช้ไฟล์ชุดเดียวกัน การเปลี่ยนแปลงนี้ย้อนกลับไม่ได้")
+    try:
+        if input("พิมพ์ RESET SHMIR เพื่อยืนยัน: ") != "RESET SHMIR":
+            print("ยกเลิกการตั้งค่า")
+            return 1
+        try:
+            secret = int(input(f"กรอกเลขความลับใหม่ (0-{PRIME - 1}): "))
+            shares = split_secret(secret)
+        except ValueError:
+            print(f"เลขความลับต้องเป็นจำนวนเต็ม 0-{PRIME - 1}", file=sys.stderr)
+            return 1
+        password = prompt_new_password()
+        if password is None:
+            return 1
+    except (EOFError, KeyboardInterrupt):
+        print("\nยกเลิกการตั้งค่า")
+        return 1
+
+    try:
+        save_shares(shares, password)
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"บันทึก State ใหม่ไม่สำเร็จ: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        if load_shares(password) != shares:
+            raise ValueError("ส่วนแบ่งที่อ่านกลับมาไม่ตรงกับส่วนแบ่งที่สร้าง")
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"ตรวจสอบ State ใหม่ไม่สำเร็จ: {exc} — เก็บ shares.json เดิมไว้", file=sys.stderr)
+        return 1
+
+    try:
+        legacy_state_path().unlink(missing_ok=True)
+    except OSError as exc:
+        print(f"บันทึก State ใหม่แล้ว แต่ลบ shares.json ไม่สำเร็จ: {exc}", file=sys.stderr)
+        return 1
+    print("สร้างและตรวจสอบ State เข้ารหัสใหม่เรียบร้อยแล้ว และจัดการไฟล์เดิมแล้ว")
+    return 0
 
 
 def initialize_state():
@@ -614,6 +665,7 @@ class ShamirPhase2Tests(unittest.TestCase):
         with self.assertRaises(ValueError): recover_secret(shares[:2])
         with self.assertRaises(ValueError): recover_secret([shares[0]] * 3)
         with self.assertRaises(ValueError): split_secret(PRIME)
+        with self.assertRaises(ValueError): create_shares(1234, 37, 0)
 
     def test_encrypted_roundtrip_and_delete(self):
         with tempfile.TemporaryDirectory() as d, patch.dict(os.environ, {"XDG_STATE_HOME": d}):
@@ -732,15 +784,68 @@ class ShamirPhase2Tests(unittest.TestCase):
                                     capture_output=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('--test', result.stdout)
+            self.assertIn('--setup', result.stdout)
+
+    def test_setup_rejects_redirected_input(self):
+        result = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--setup"],
+                                input="RESET SHMIR\n42\n", text=True,
+                                capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("เทอร์มินัลแบบโต้ตอบ", result.stderr)
+
+    def test_setup_cancel_preserves_both_state_files(self):
+        with tempfile.TemporaryDirectory() as d, patch.dict(os.environ, {"XDG_STATE_HOME": d}):
+            state_dir().mkdir()
+            state_path().write_bytes(b"original encrypted state")
+            legacy_state_path().write_bytes(b"original plaintext state")
+            for responses, passwords in [
+                (["reset shmir"], []),
+                (["RESET SHMIR", "50021"], []),
+                (["RESET SHMIR", "42"], ["/cancel"]),
+            ]:
+                with self.subTest(responses=responses), \
+                        patch.object(sys.stdin, "isatty", return_value=True), \
+                        patch.object(sys.stdout, "isatty", return_value=True), \
+                        patch("builtins.input", side_effect=responses), \
+                        patch("getpass.getpass", side_effect=passwords):
+                    self.assertEqual(clean_setup(), 1)
+                    self.assertEqual(state_path().read_bytes(), b"original encrypted state")
+                    self.assertEqual(legacy_state_path().read_bytes(), b"original plaintext state")
+
+    def test_setup_replaces_state_and_removes_legacy_after_verification(self):
+        with tempfile.TemporaryDirectory() as d, patch.dict(os.environ, {"XDG_STATE_HOME": d}):
+            save_shares(split_secret(1234), self.TEST_PASSWORD)
+            legacy_state_path().write_bytes(b"original plaintext state")
+            password = "รหัสผ่านใหม่ทดสอบ"
+            with patch.object(sys.stdin, "isatty", return_value=True), \
+                    patch.object(sys.stdout, "isatty", return_value=True), \
+                    patch("builtins.input", side_effect=["RESET SHMIR", "42"]), \
+                    patch("getpass.getpass", side_effect=[password, password]):
+                self.assertEqual(clean_setup(), 0)
+            self.assertEqual(recover_secret(load_shares(password)[:MIN_SHARES]), 42)
+            self.assertFalse(legacy_state_path().exists())
+
+    def test_setup_preserves_legacy_when_verification_fails(self):
+        with tempfile.TemporaryDirectory() as d, patch.dict(os.environ, {"XDG_STATE_HOME": d}):
+            state_dir().mkdir()
+            legacy_state_path().write_bytes(b"original plaintext state")
+            with patch.object(sys.stdin, "isatty", return_value=True), \
+                    patch.object(sys.stdout, "isatty", return_value=True), \
+                    patch("builtins.input", side_effect=["RESET SHMIR", "42"]), \
+                    patch("getpass.getpass", return_value=self.TEST_PASSWORD), \
+                    patch(__name__ + ".load_shares", return_value=None):
+                self.assertEqual(clean_setup(), 1)
+            self.assertEqual(legacy_state_path().read_bytes(), b"original plaintext state")
 
 
 def main():
     parser = argparse.ArgumentParser(
         description="Shamir Secret Sharing 3-of-5 — Phase 2: Encrypted State (AES-256-GCM + Argon2id)",
-        epilog="ตัวอย่าง: python3 Shamir_Phase2_Secure.py | python3 Shamir_Phase2_Secure.py help | python3 Shamir_Phase2_Secure.py --test",
+        epilog="ตัวอย่าง: python3 Shamir_Phase2_Secure_Fixed.py --setup",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--demo", action="store_true", help="แสดงตัวอย่างตาม PDF (ไม่ใช้ไฟล์ State)")
+    parser.add_argument("--setup", action="store_true", help="ตั้งค่า State เข้ารหัสใหม่แทนข้อมูลเดิม (ต้องยืนยัน)")
     parser.add_argument(
         "--no-alt-screen", action="store_true",
         help="แสดงผลบนหน้าจอ Terminal ปกติ (ไม่คืนหน้าจอเดิมเมื่อออก)",
@@ -756,6 +861,8 @@ def main():
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(ShamirPhase2Tests)
         result = unittest.TextTestRunner(verbosity=2).run(suite)
         return 0 if result.wasSuccessful() else 1
+    if args.setup:
+        return clean_setup()
     with alternate_screen(enabled=not args.no_alt_screen):
         try:
             if args.demo:
